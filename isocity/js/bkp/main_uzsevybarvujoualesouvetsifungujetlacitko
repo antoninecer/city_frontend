@@ -1,0 +1,815 @@
+/* ============================================================================
+ * main.js – City Builder (UX-first, mobile-friendly)
+ * ----------------------------------------------------------------------------
+ * FÁZE:
+ *  - zatím pouze 1x1 budovy
+ *  - žádné footprinty
+ *  - důraz na chování, UX a čitelnost
+ *  - upgrade má vždy mezikrok (inspect panel)
+ * ----------------------------------------------------------------------------
+ * Tento soubor je monolit záměrně.
+ * Až se chování ustálí, rozdělí se do modulů.
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * Backend / config
+ * ------------------------------------------------------------------------- */
+
+const API_BASE = 'https://city.api.ventureout.cz';
+const USER_ID = 'test123';
+
+/* ---------------------------------------------------------------------------
+ * Canvas setup
+ * ------------------------------------------------------------------------- */
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+/* ---------------------------------------------------------------------------
+ * Iso grid config
+ * ------------------------------------------------------------------------- */
+
+const tileWidth = 128;
+const tileHeight = 64;
+const gridSize = 7;
+
+// posun celé mapy na canvasu
+const origin = {
+  x: Math.floor(canvas.width / 2),
+  y: 80,
+};
+
+/* ---------------------------------------------------------------------------
+ * Game state
+ * ------------------------------------------------------------------------- */
+
+let gameState = null;
+
+// grid[x][y] -> building object nebo null
+let grid = Array(gridSize)
+  .fill(null)
+  .map(() => Array(gridSize).fill(null));
+
+// mapování "x_y" -> buildingId (backend)
+let placedBuildings = {};
+
+// input / UI state
+let hoverX = -1;
+let hoverY = -1;
+let hoverBuilding = null; // building objekt pod myší/tapem (jen pro highlight)
+
+// build selection (stavění)
+let selectedBuildType = null;
+
+// INSPECT MODE (mezikrok)
+let uiMode = 'idle'; // 'idle' | 'inspect'
+let inspectedBuilding = null; // building object
+let inspectedX = -1;          // tile x
+let inspectedY = -1;          // tile y
+let inspectedId = null;       // backend building id (důležité pro upgrade)
+
+// hitboxy pro UI panel (počítáme je při vykreslení a používáme při klikání)
+let inspectUI = {
+  visible: false,
+  panel: { x: 0, y: 0, w: 0, h: 0 },
+  btnUpgrade: { x: 0, y: 0, w: 0, h: 0, enabled: false },
+  btnBack: { x: 0, y: 0, w: 0, h: 0, enabled: true },
+};
+
+// status message (HUD)
+let lastStatus = '';
+let lastStatusAt = 0;
+
+/* ---------------------------------------------------------------------------
+ * Economy (UI-only precheck, server je autorita)
+ * ------------------------------------------------------------------------- */
+
+const BUILD_COST_GOLD = {
+  townhall: 200,
+  farm: 100,
+  lumbermill: 150,
+  house: 80,
+  barracks: 300,
+};
+
+/* ---------------------------------------------------------------------------
+ * Assets
+ * ------------------------------------------------------------------------- */
+
+const buildingImages = {};
+
+const imageMap = {
+  townhall: 'assets/realm/Castles/castlekeep_01.png',
+  farm: 'assets/realm/Fields Farms/field_01a.png',
+  lumbermill: 'assets/realm/Mills/windmill_01a.png',
+  house: 'assets/realm/Houses/house_01a.png',
+  barracks: 'assets/realm/Barracks/Barracks_01.png',
+};
+
+// typy, které kreslíme jako výplň tile (zatím vypnuto – chceme 1x1 vizuál)
+const GROUND_TYPES = new Set([]);
+
+/* ---------------------------------------------------------------------------
+ * UI helpers
+ * ------------------------------------------------------------------------- */
+
+function updateUI(gold, wood, extra = '') {
+  const ui = document.getElementById('ui');
+  if (!ui) return;
+
+  ui.innerHTML = `
+    <strong>Gold:</strong> ${Math.round(gold)}<br>
+    <strong>Wood:</strong> ${Math.round(wood)}<br>
+    <small>user: ${USER_ID}</small>
+    ${extra ? `<br><em>${extra}</em>` : ''}
+  `;
+}
+
+function setStatus(msg) {
+  lastStatus = msg || '';
+  lastStatusAt = performance.now();
+}
+
+function statusIsFresh() {
+  return lastStatus && performance.now() - lastStatusAt < 5000;
+}
+
+function selectType(type) {
+  selectedBuildType = type;
+  const cost = BUILD_COST_GOLD[type] ?? '?';
+  setStatus(`Vybráno: ${type} (cena ~${cost}g)`);
+}
+
+window.selectType = selectType;
+
+/* ---------------------------------------------------------------------------
+ * Geometry (iso)
+ * ------------------------------------------------------------------------- */
+
+function isoToScreen(x, y) {
+  const sx = (y - x) * (tileWidth / 2);
+  const sy = (x + y) * (tileHeight / 2);
+  return { sx, sy };
+}
+
+function tileGroundPoint(x, y) {
+  const { sx, sy } = isoToScreen(x, y);
+  return {
+    gx: origin.x + sx,
+    gy: origin.y + sy + tileHeight / 2,
+  };
+}
+
+function screenToIso(px, py) {
+  const mx = px - origin.x;
+  const my = py - origin.y;
+
+  const a = mx / (tileWidth / 2);
+  const b = my / (tileHeight / 2);
+
+  const x = Math.floor((b - a) / 2);
+  const y = Math.floor((b + a) / 2);
+
+  if (x < 0 || x >= gridSize || y < 0 || y >= gridSize) {
+    return { x: -1, y: -1 };
+  }
+  return { x, y };
+}
+
+/* ---------------------------------------------------------------------------
+ * Deterministic variation (terrain)
+ * ------------------------------------------------------------------------- */
+
+function hash2(x, y) {
+  let n = x * 374761393 + y * 668265263;
+  n = (n ^ (n >> 13)) >>> 0;
+  n = (n * 1274126177) >>> 0;
+  return (n & 0xffffffff) / 0xffffffff;
+}
+
+/* ---------------------------------------------------------------------------
+ * Asset preload
+ * ------------------------------------------------------------------------- */
+
+function preloadImages() {
+  return new Promise((resolve) => {
+    const keys = Object.keys(imageMap);
+    if (keys.length === 0) resolve();
+
+    let loaded = 0;
+    for (const type of keys) {
+      const img = new Image();
+      img.src = imageMap[type];
+      img.onload = () => {
+        buildingImages[type] = img;
+        loaded++;
+        if (loaded === keys.length) resolve();
+      };
+      img.onerror = () => {
+        console.warn('Failed to load image:', type);
+        loaded++;
+        if (loaded === keys.length) resolve();
+      };
+    }
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Backend communication
+ * ------------------------------------------------------------------------- */
+
+async function loadGameState() {
+  try {
+    const res = await fetch(`${API_BASE}/city/${USER_ID}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) throw new Error(`Backend ${res.status}`);
+
+    gameState = await res.json();
+    updateUI(gameState.resources.gold, gameState.resources.wood);
+
+    grid = Array(gridSize)
+      .fill(null)
+      .map(() => Array(gridSize).fill(null));
+    placedBuildings = {};
+
+    for (const id in gameState.buildings) {
+      const b = gameState.buildings[id];
+      if (typeof b?.x !== 'number' || typeof b?.y !== 'number') continue;
+      if (b.x < 0 || b.y < 0 || b.x >= gridSize || b.y >= gridSize) continue;
+
+      // Uložíme i backend id do objektu (praktické pro inspect)
+      // Nepřepisujeme serverový tvar agresivně: jen přidáme vlastnost.
+      b._id = id;
+
+      grid[b.x][b.y] = b;
+      placedBuildings[`${b.x}_${b.y}`] = id;
+    }
+
+    // Když je otevřený inspect, může se stát, že budova zmizela / změnila se.
+    // Mravně: zkusíme udržet konzistenci.
+    if (uiMode === 'inspect') {
+      if (inspectedX >= 0 && inspectedY >= 0) {
+        const stillThere = grid[inspectedX][inspectedY];
+        if (!stillThere) {
+          uiMode = 'idle';
+          inspectedBuilding = null;
+          inspectedId = null;
+          inspectedX = inspectedY = -1;
+          setStatus('Budova už není dostupná.');
+        } else {
+          inspectedBuilding = stillThere;
+          inspectedId = stillThere._id || placedBuildings[`${inspectedX}_${inspectedY}`] || inspectedId;
+        }
+      }
+    }
+
+    setStatus('Stav načten.');
+  } catch (e) {
+    console.error(e);
+    updateUI(500, 300, 'Offline mód');
+    setStatus('Chyba komunikace se serverem');
+  }
+}
+
+async function placeBuilding(type, x, y) {
+  try {
+    if (gameState?.resources?.gold != null) {
+      const cost = BUILD_COST_GOLD[type];
+      if (typeof cost === 'number' && gameState.resources.gold < cost) {
+        setStatus(`Nedostatek zlata (${cost}g)`);
+        return;
+      }
+    }
+
+    const res = await fetch(`${API_BASE}/city/${USER_ID}/place`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ building_type: type, x, y }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      setStatus(`Nelze postavit: ${text}`);
+      return;
+    }
+
+    setStatus(`Postaveno: ${type}`);
+    await loadGameState();
+  } catch (e) {
+    console.error(e);
+    setStatus('Chyba při stavbě');
+  }
+}
+
+async function upgradeBuilding(buildingId) {
+  try {
+    if (!buildingId) {
+      setStatus('Upgrade: chybí buildingId');
+      return;
+    }
+
+    const res = await fetch(`${API_BASE}/city/${USER_ID}/upgrade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ building_id: buildingId }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      setStatus(`Upgrade selhal: ${text}`);
+      return;
+    }
+
+    setStatus('Upgrade spuštěn');
+    uiMode = 'idle';
+    inspectedBuilding = null;
+    inspectedId = null;
+    inspectedX = inspectedY = -1;
+
+    await loadGameState();
+  } catch (e) {
+    console.error(e);
+    setStatus('Chyba upgradu');
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Rendering helpers
+ * ------------------------------------------------------------------------- */
+
+function resetTransform() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function drawDiamondPath() {
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(tileWidth / 2, tileHeight / 2);
+  ctx.lineTo(0, tileHeight);
+  ctx.lineTo(-tileWidth / 2, tileHeight / 2);
+  ctx.closePath();
+}
+
+function drawTerrainTile(x, y) {
+  const { sx, sy } = isoToScreen(x, y);
+  ctx.save();
+  ctx.translate(origin.x + sx, origin.y + sy);
+
+  const r = hash2(x, y);
+  const base1 = 0.7 + r * 0.1;
+  const base2 = 0.6 + r * 0.08;
+
+  const g = ctx.createLinearGradient(0, 0, 0, tileHeight);
+  g.addColorStop(
+    0,
+    `rgb(${Math.floor(210 * base1)},${Math.floor(185 * base1)},${Math.floor(150 * base1)})`
+  );
+  g.addColorStop(
+    1,
+    `rgb(${Math.floor(210 * base2)},${Math.floor(185 * base2)},${Math.floor(150 * base2)})`
+  );
+
+  drawDiamondPath();
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+  ctx.stroke();
+
+  // Hover overlay jen pro prázdné tile při idle (stavění)
+  if (x === hoverX && y === hoverY && !grid[x][y] && uiMode === 'idle') {
+    ctx.fillStyle = 'rgba(0,255,0,0.12)';
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/* ---------------------------------------------------------------------------
+ * 1x1 visual scaling
+ * ------------------------------------------------------------------------- */
+
+function buildingScaleFor(img) {
+  // Držíme sprite vizuálně "u jedné dlaždice".
+  const maxW = tileWidth * 0.7;
+  const scale = maxW / img.width;
+  return Math.min(0.75, Math.max(0.45, scale));
+}
+
+/* ---------------------------------------------------------------------------
+ * Upgrade logic (mravné rozhodování v UI)
+ * ------------------------------------------------------------------------- */
+
+// U nás je server autorita, ale UI potřebuje "světlo" ještě před klikem.
+// Proto děláme rozumné aproximace pro zobrazení.
+// Když později dostaneme přesná data z backendu, vymění se jen tyto funkce.
+
+function canUpgradeByTime(b) {
+  if (!b) return false;
+  if (b.upgrade_end && Date.now() / 1000 < b.upgrade_end) return false;
+  return true;
+}
+
+// Placeholder pro cenu upgradu – později napojit na backend.
+function estimateUpgradeCostGold(type, nextLevel) {
+  const base = BUILD_COST_GOLD[type] ?? 100;
+  // mírně roste s levelem (konzervativně)
+  const cost = Math.round(base * (0.75 + nextLevel * 0.35));
+  return Math.max(10, cost);
+}
+
+// Placeholder pro výnos – později napojit na backend.
+function estimateYield(type, level) {
+  // jen aby UI mělo co říct; později nahradíš
+  const base = {
+    farm: 6,
+    house: 2,
+    lumbermill: 4,
+    barracks: 0,
+    townhall: 0,
+  }[type] ?? 1;
+  return Math.round(base * (1 + (level - 1) * 0.25));
+}
+
+function hasEnoughForUpgradeGold(costGold) {
+  const gold = gameState?.resources?.gold;
+  if (typeof gold !== 'number') return true; // offline / neznáme → neblokuj
+  return gold >= costGold;
+}
+
+// finální UI verdikt: modrá vs červená a enabled tlačítko
+function getUpgradeState(b) {
+  if (!b) {
+    return { possible: false, reason: 'Neznámá budova', costGold: 0, yield: 0 };
+  }
+  const lvl = b.level ?? 1;
+  const nextLevel = lvl + 1;
+  const costGold = estimateUpgradeCostGold(b.type, nextLevel);
+  const yld = estimateYield(b.type, lvl);
+
+  const timeOk = canUpgradeByTime(b);
+  if (!timeOk) {
+    return { possible: false, reason: 'Upgrade probíhá / nelze', costGold, yield: yld };
+  }
+
+  const resourceOk = hasEnoughForUpgradeGold(costGold);
+  if (!resourceOk) {
+    return { possible: false, reason: `Nedostatek zlata (${costGold}g)`, costGold, yield: yld };
+  }
+
+  return { possible: true, reason: 'Upgrade možný', costGold, yield: yld };
+}
+
+/* ---------------------------------------------------------------------------
+ * Building drawing with hover + inspect highlight
+ * ------------------------------------------------------------------------- */
+
+function drawBuilding(b, x, y) {
+  const img = buildingImages[b.type];
+  if (!img) return;
+
+  const { gx, gy } = tileGroundPoint(x, y);
+  const s = buildingScaleFor(img);
+
+  const dx = gx - (img.width * s) / 2;
+  const dy = gy - img.height * s + 10;
+
+  // Rozlišíme: hover highlight vs inspect highlight
+  const isInspected = (uiMode === 'inspect' && inspectedBuilding === b);
+  const isHovered = (uiMode === 'idle' && hoverBuilding === b);
+
+  // Když je budova buď hover nebo inspect, chceme barvu podle upgrade stavu:
+  // - modrá: ok
+  // - červená: nejde (čas nebo zdroje)
+  let glow = null;
+  if (isInspected || isHovered) {
+    const st = getUpgradeState(b);
+    glow = st.possible ? 'rgba(80,160,255,0.9)' : 'rgba(255,80,80,0.9)';
+  }
+
+  ctx.save();
+  if (glow) {
+    ctx.filter = `drop-shadow(0 0 7px ${glow})`;
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(img, dx, dy, img.width * s, img.height * s);
+  ctx.restore();
+
+  // Jemná popiska nad budovou (volitelně jen při hover/inspect, ať to není přeplněné)
+  if (isInspected || isHovered) {
+    const lvl = b.level ?? 1;
+    const label = `${b.type.toUpperCase()} (Lvl ${lvl})`;
+    ctx.save();
+    resetTransform();
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // pozice: nad ground pointem
+    const lx = gx;
+    const ly = gy - 62;
+
+    const tw = ctx.measureText(label).width;
+    const pad = 8;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(lx - tw / 2 - pad, ly - 10, tw + pad * 2, 20);
+
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, lx, ly);
+
+    ctx.restore();
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Inspect panel (mezikrok) – FIX: hitboxy a správné buildingId
+ * ------------------------------------------------------------------------- */
+
+function drawInspectPanel() {
+  if (uiMode !== 'inspect' || !inspectedBuilding) {
+    inspectUI.visible = false;
+    return;
+  }
+
+  const st = getUpgradeState(inspectedBuilding);
+
+  // panel
+  const panelW = 320;
+  const panelH = 180;
+  const x = Math.floor(canvas.width / 2 - panelW / 2);
+  const y = Math.floor(canvas.height - panelH - 18);
+
+  // tlačítka
+  const btnH = 34;
+  const btnW = 130;
+  const gap = 10;
+
+  const btnUpgrade = {
+    x: x + 14,
+    y: y + panelH - btnH - 14,
+    w: btnW,
+    h: btnH,
+    enabled: !!st.possible,
+  };
+
+  const btnBack = {
+    x: btnUpgrade.x + btnW + gap,
+    y: btnUpgrade.y,
+    w: 110,
+    h: btnH,
+    enabled: true,
+  };
+
+  inspectUI.visible = true;
+  inspectUI.panel = { x, y, w: panelW, h: panelH };
+  inspectUI.btnUpgrade = btnUpgrade;
+  inspectUI.btnBack = btnBack;
+
+  ctx.save();
+  resetTransform();
+
+  // background
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(x, y, panelW, panelH);
+
+  // border (modrá/červená dle možnosti upgradu)
+  ctx.strokeStyle = st.possible ? '#4da3ff' : '#ff4d4d';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 0.5, y + 0.5, panelW - 1, panelH - 1);
+
+  // Title
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+
+  const lvl = inspectedBuilding.level ?? 1;
+  const title = `${inspectedBuilding.type.toUpperCase()} (Lvl ${lvl})`;
+  ctx.fillText(title, x + 14, y + 26);
+
+  // Body info
+  ctx.font = '12px Arial';
+  const yieldNow = st.yield;
+  ctx.fillText(`Výnos: ${yieldNow} / tick`, x + 14, y + 54);
+  ctx.fillText(`Cena upgradu: ${st.costGold}g`, x + 14, y + 74);
+
+  // Reason line
+  ctx.fillStyle = st.possible ? '#b9dcff' : '#ffb9b9';
+  ctx.fillText(st.reason, x + 14, y + 98);
+
+  // Buttons
+  // Upgrade button
+  ctx.fillStyle = btnUpgrade.enabled ? '#2b6cff' : '#444';
+  ctx.fillRect(btnUpgrade.x, btnUpgrade.y, btnUpgrade.w, btnUpgrade.h);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '12px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('UPGRADE', btnUpgrade.x + btnUpgrade.w / 2, btnUpgrade.y + btnUpgrade.h / 2);
+
+  // Back button
+  ctx.fillStyle = '#666';
+  ctx.fillRect(btnBack.x, btnBack.y, btnBack.w, btnBack.h);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('ZPĚT', btnBack.x + btnBack.w / 2, btnBack.y + btnBack.h / 2);
+
+  ctx.restore();
+}
+
+/* ---------------------------------------------------------------------------
+ * HUD status
+ * ------------------------------------------------------------------------- */
+
+function drawHUD() {
+  if (!statusIsFresh()) return;
+
+  ctx.save();
+  resetTransform();
+
+  const msg = lastStatus;
+  ctx.font = '12px Arial';
+  const w = ctx.measureText(msg).width + 16;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(10, canvas.height - 26, w, 18);
+
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(msg, 18, canvas.height - 17);
+
+  ctx.restore();
+}
+
+/* ---------------------------------------------------------------------------
+ * Render loop
+ * ------------------------------------------------------------------------- */
+
+function render() {
+  resetTransform();
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const tiles = [];
+  for (let x = 0; x < gridSize; x++) {
+    for (let y = 0; y < gridSize; y++) tiles.push({ x, y });
+  }
+  tiles.sort((a, b) => a.x + a.y - (b.x + b.y));
+
+  // Terrain
+  for (const t of tiles) drawTerrainTile(t.x, t.y);
+
+  // (GROUND_TYPES zatím prázdné – ponecháme připravené na později)
+  for (const t of tiles) {
+    const b = grid[t.x][t.y];
+    if (!b) continue;
+    if (GROUND_TYPES.has(b.type)) {
+      // do budoucna: ground overlay režim
+      // nyní vypnuto
+    }
+  }
+
+  // Buildings
+  for (const t of tiles) {
+    const b = grid[t.x][t.y];
+    if (!b) continue;
+    if (GROUND_TYPES.has(b.type)) continue;
+    drawBuilding(b, t.x, t.y);
+  }
+
+  drawInspectPanel();
+  drawHUD();
+
+  requestAnimationFrame(render);
+}
+
+/* ---------------------------------------------------------------------------
+ * Input helpers (coordinates)
+ * ------------------------------------------------------------------------- */
+
+function getCanvasPointFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const px = (e.clientX ?? 0) - rect.left;
+  const py = (e.clientY ?? 0) - rect.top;
+  return { px, py };
+}
+
+function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+/* ---------------------------------------------------------------------------
+ * Input handling
+ * ------------------------------------------------------------------------- */
+
+function onPointerMove(e) {
+  const { px, py } = getCanvasPointFromEvent(e);
+  const pos = screenToIso(px, py);
+
+  hoverX = pos.x;
+  hoverY = pos.y;
+
+  if (hoverX !== -1 && hoverY !== -1) {
+    hoverBuilding = grid[hoverX][hoverY];
+  } else {
+    hoverBuilding = null;
+  }
+}
+
+// Mravné klikání:
+// - když je otevřený panel, klik mimo tlačítka panel zavře (neprovádí jinou akci)
+// - upgrade jen přes tlačítko, a jen když enabled
+// - klik na budovu v idle otevře panel
+// - klik na prázdné pole v idle staví (pokud je vybrán typ)
+function onPointerDown(e) {
+  const { px, py } = getCanvasPointFromEvent(e);
+
+  // Když je otevřený inspect, tak první právo má panel.
+  if (uiMode === 'inspect' && inspectUI.visible && inspectedBuilding) {
+    // Klik na upgrade
+    if (pointInRect(px, py, inspectUI.btnUpgrade)) {
+      if (inspectUI.btnUpgrade.enabled) {
+        // DŮLEŽITÉ: upgrade na základě inspectedId, ne hover tile
+        const id = inspectedId || inspectedBuilding._id || placedBuildings[`${inspectedX}_${inspectedY}`];
+        upgradeBuilding(id);
+      } else {
+        setStatus('Upgrade nyní nelze.');
+      }
+      return;
+    }
+
+    // Klik na zpět
+    if (pointInRect(px, py, inspectUI.btnBack)) {
+      uiMode = 'idle';
+      inspectedBuilding = null;
+      inspectedId = null;
+      inspectedX = inspectedY = -1;
+      return;
+    }
+
+    // Klik mimo panel: mravně jen zavřít
+    if (!pointInRect(px, py, inspectUI.panel)) {
+      uiMode = 'idle';
+      inspectedBuilding = null;
+      inspectedId = null;
+      inspectedX = inspectedY = -1;
+      return;
+    }
+
+    // Klik do panelu mimo tlačítka: nic nedělej
+    return;
+  }
+
+  // Idle mode: pracujeme s tile pod ukazatelem
+  if (hoverX === -1 || hoverY === -1) return;
+
+  const b = grid[hoverX][hoverY];
+  if (b) {
+    // otevři inspect
+    uiMode = 'inspect';
+    inspectedBuilding = b;
+    inspectedX = hoverX;
+    inspectedY = hoverY;
+    inspectedId = b._id || placedBuildings[`${hoverX}_${hoverY}`] || null;
+
+    // pro uživatele: říct, co se děje
+    const st = getUpgradeState(b);
+    setStatus(st.possible ? 'Otevřen detail: upgrade možný' : `Otevřen detail: ${st.reason}`);
+    return;
+  }
+
+  // prázdné pole: stavění
+  if (!selectedBuildType) {
+    setStatus('Nejdřív vyber typ budovy dole.');
+    return;
+  }
+
+  placeBuilding(selectedBuildType, hoverX, hoverY);
+}
+
+/* ---------------------------------------------------------------------------
+ * Boot
+ * ------------------------------------------------------------------------- */
+
+document.addEventListener('DOMContentLoaded', async () => {
+  updateUI(500, 300, 'Načítám assety…');
+  setStatus('Boot…');
+
+  await preloadImages();
+
+  // pointer events (myš + dotyk)
+  canvas.addEventListener('pointermove', onPointerMove, { passive: true });
+  canvas.addEventListener('pointerdown', onPointerDown);
+
+  // fallback (kdyby pointer nebyl)
+  canvas.addEventListener('mousemove', onPointerMove, { passive: true });
+  canvas.addEventListener('mousedown', onPointerDown);
+
+  await loadGameState();
+  setInterval(loadGameState, 10000);
+
+  requestAnimationFrame(render);
+});
+

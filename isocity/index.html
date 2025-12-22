@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IsoCity - Medieval Builder</title>
+  <style>
+    body { background: #111; color: #fff; font-family: Arial; margin: 0; }
+    #ui { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 8px; z-index: 10; }
+    #canvas { display: block; margin: 0 auto; }
+    #tools { position: absolute; bottom: 10px; left: 10px; }
+    #tools img { width: 50px; cursor: pointer; margin: 5px; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    Gold: 500<br>
+    Wood: 300
+  </div>
+  <canvas id="canvas" width="900" height="600"></canvas>
+  <div id="tools">
+    <img src="assets/realm/Castles/castlekeep_01.png" onclick="selectType('townhall')">
+    <img src="assets/realm/Fields Farms/field_01a.png" onclick="selectType('farm')">
+    <img src="assets/realm/Mills/windmill_01a.png" onclick="selectType('lumbermill')">
+    <img src="assets/realm/Houses/house_01a.png" onclick="selectType('house')">
+    <img src="assets/realm/Barracks/Barracks_01.png" onclick="selectType('barracks')">
+  </div>
+<script defer src="js/iso_config.js"></script>
+<script defer src="js/iso_api_state.js"></script>
+<script defer src="js/iso_render.js"></script>
+<script defer src="js/iso_input_ui.js"></script>
+<script defer src="js/main.js"></script>
+
+</body>
+</html>
