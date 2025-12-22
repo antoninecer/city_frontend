@@ -1,0 +1,40 @@
+# ---- Dependencies ----
+node_modules/
+
+# ---- Build outputs ----
+dist/
+build/
+.next/
+out/
+
+# ---- Caches ----
+.cache/
+.vite/
+.parcel-cache/
+.npm/
+.yarn/
+pnpm-debug.log*
+
+# ---- Env / secrets ----
+.env
+.env.*
+*.local
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- IDEs ----
+.vscode/
+.idea/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Local archives ----
+*.tar
+*.tgz
+
