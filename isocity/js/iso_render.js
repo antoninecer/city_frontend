@@ -88,10 +88,12 @@
 
         // vary by WORLD coord (stable while panning)
         const { wx, wy } = IsoCity.world.viewToWorld(t.x, t.y);
+        const wb = IsoCity.state?.world?.bounds;
+        const inside = wb ? (wx >= wb.min_x && wx <= wb.max_x && wy >= wb.min_y && wy <= wb.max_y) : true;
         const r = U?.hash2 ? U.hash2(wx, wy) : ((Math.sin(wx * 12.9898 + wy * 78.233) * 43758.5453) % 1);
 
-        const base1 = 0.7 + r * 0.1;
-        const base2 = 0.6 + r * 0.08;
+        const base1 = inside ? (0.7 + r * 0.1) : 0.18;
+        const base2 = inside ? (0.6 + r * 0.08) : 0.14;
 
         const g = ctx.createLinearGradient(0, 0, 0, cfg.tileHeight);
         g.addColorStop(0, `rgb(${Math.floor(210 * base1)},${Math.floor(185 * base1)},${Math.floor(150 * base1)})`);
@@ -106,8 +108,8 @@
 
         const b = s.grid?.[t.x]?.[t.y] || null;
 
-        // hover overlay for empty tile
-        if (s.uiMode !== "context" && t.x === s.hoverX && t.y === s.hoverY && !b) {
+        // hover overlay for empty tile (only inside bounds)
+        if (inside && s.uiMode !== "context" && t.x === s.hoverX && t.y === s.hoverY && !b) {
           ctx.fillStyle = "rgba(0,255,0,0.14)";
           ctx.fill();
         }

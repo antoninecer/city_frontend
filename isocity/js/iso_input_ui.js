@@ -85,19 +85,22 @@
   }
 
   function getBuildTypes() {
-    if (cfg?.BUILD_COST_GOLD && typeof cfg.BUILD_COST_GOLD === "object") {
-      return Object.keys(cfg.BUILD_COST_GOLD);
+    const cat = s.gameState?.catalog;
+    if (cat && typeof cat === "object") {
+      // Hide townhall from build list (backend rule is exactly one).
+      return Object.keys(cat).filter((k) => k !== "townhall");
     }
-    // fallback list (matches backend)
-    return ["house", "farm", "lumbermill", "townhall", "barracks"];
+    if (cfg?.BUILD_COST_GOLD && typeof cfg.BUILD_COST_GOLD === "object") {
+      return Object.keys(cfg.BUILD_COST_GOLD).filter((k) => k !== "townhall");
+    }
+    return ["house", "farm", "lumbermill", "barracks"];
   }
 
   function getBuildCost(type) {
+    const c0 = s.gameState?.catalog?.[type]?.build_cost_gold;
+    if (Number.isFinite(c0)) return c0;
     const c1 = cfg?.BUILD_COST_GOLD?.[type];
     if (Number.isFinite(c1)) return c1;
-    // try frontend building config arrays: use index 1 similarly to backend logic
-    const arr = cfg?.BUILDING_CONFIG?.[type]?.upgrade_cost_gold;
-    if (Array.isArray(arr) && Number.isFinite(arr[1])) return arr[1];
     return 100;
   }
 
@@ -181,9 +184,10 @@
     const gold = getGold();
     const out = [];
 
+    const isUpgrading = b?.upgrade_end != null;
     const upCost = getUpgradeCost(b);
     const upTime = getUpgradeTimeSec(b);
-    const canUpgrade = gold >= upCost;
+    const canUpgrade = !isUpgrading && gold >= upCost;
 
     out.push({
       icon: "⬆️",
@@ -196,6 +200,39 @@
       enabled: !!canUpgrade,
     });
 
+    // If an upgrade is running, offer gem speedups.
+    if (isUpgrading) {
+      const now = Date.now() / 1000;
+      const ue = Number(b.upgrade_end);
+      const remaining = Math.max(0, ue - now);
+
+      // Pricing mirror (backend placeholder): 1 gem per started 5 minutes.
+      const costFor = (seconds) => Math.max(1, Math.ceil(Math.max(0, seconds) / 300));
+
+      out.push({
+        icon: "⚡",
+        label: "SPEEDUP (FINISH)",
+        type: "speedup",
+        speedupMode: "finish",
+        buildingId: b._id,
+        costGems: costFor(remaining),
+        time: 0,
+        enabled: true,
+      });
+
+      out.push({
+        icon: "⚡",
+        label: "SPEEDUP (-5m)",
+        type: "speedup",
+        speedupMode: "reduce",
+        seconds: 300,
+        buildingId: b._id,
+        costGems: costFor(Math.min(300, remaining)),
+        time: 0,
+        enabled: true,
+      });
+    }
+
     out.push({
       icon: "🧨",
       label: "DEMOLISH",
@@ -203,7 +240,7 @@
       buildingId: b._id,
       cost: 0,
       time: 0,
-      enabled: true,
+      enabled: b?.type !== "townhall",
     });
 
     return out;
@@ -228,6 +265,12 @@
       IsoCity.api.upgradeBuilding(a.buildingId);
     } else if (a.type === "demolish") {
       IsoCity.api.demolishBuilding(a.buildingId);
+    } else if (a.type === "speedup") {
+      IsoCity.api.speedupUpgrade({
+        buildingId: a.buildingId,
+        mode: a.speedupMode,
+        seconds: a.speedupMode === "reduce" ? a.seconds : null,
+      });
     }
 
     closeMenu();
@@ -253,6 +296,13 @@
     s.hoverY = vxy.vy;
 
     const b = s.grid?.[vxy.vx]?.[vxy.vy] || null;
+
+    // Selection is a small but important piece of "mravní" čistoty UI:
+    // we always know, which building is being acted upon.
+    s.selectedBuildingId = b?._id || null;
+
+    // remember selection (for menu buttons / future HUD)
+    s.selectedBuildingId = b?._id || null;
     s.hoverBuilding = b;
   }
 
@@ -467,6 +517,7 @@
       ctx.font = "12px Arial";
       const meta = [];
       if (Number.isFinite(a.cost)) meta.push(`${Math.round(a.cost)}g`);
+      if (Number.isFinite(a.costGems)) meta.push(`${Math.round(a.costGems)}💎`);
       if (Number.isFinite(a.time)) meta.push(`${Math.round(a.time)}s`);
       if (Number.isFinite(a.incomeDelta) && a.incomeDelta !== 0) {
         const sign = a.incomeDelta > 0 ? "+" : "";

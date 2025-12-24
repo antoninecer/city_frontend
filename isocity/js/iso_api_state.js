@@ -1,10 +1,12 @@
 /* iso_api_state.js
  *
- * Runtime state + API bridge
- * WORLD MODEL:
- * - Backend today sends x/y as "world coords" but in practice it's a finite 7x7 (0..6).
- * - Frontend supports viewport (view.w x view.h) with offsetX/offsetY in WORLD coords.
- * - This file auto-detects "finite map coordinates" and forces offset=0 so you never lose buildings.
+ * Runtime state + API bridge (mobile-first)
+ *
+ * WORLD MODEL (matches backend):
+ * - Buildings are stored in WORLD tile coords (negative allowed).
+ * - World bounds are radius-based around (0,0) and come from GET /city/{user}.
+ * - Frontend renders a fixed VIEWPORT (default 7x7) and pans by changing
+ *   the viewport top-left WORLD coordinate (offsetX/offsetY).
  */
 
 (function (global) {
@@ -15,8 +17,21 @@
     return Array.from({ length: w }, () => Array(h).fill(null));
   }
 
+  function clampInt(v, fallback = 0) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.trunc(n);
+  }
+
+  function safeJsonParse(s, fallback) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return fallback;
+    }
+  }
+
   function getWorldXY(b) {
-    // Backend might send x/y (today), or world_x/world_y later.
     const wx =
       (typeof b?.world_x === "number" ? b.world_x : (typeof b?.x === "number" ? b.x : null));
     const wy =
@@ -25,97 +40,92 @@
     return { wx, wy };
   }
 
-  function clampInt(v, fallback = 0) {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.trunc(n);
+  function nowMs() {
+    return (global.performance?.now?.() ?? Date.now());
   }
 
-  function getBuildingsBounds(buildingsObj) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    let count = 0;
-
-    if (!buildingsObj || typeof buildingsObj !== "object") {
-      return { ok: false, count: 0, minX: 0, minY: 0, maxX: 0, maxY: 0 };
-    }
-
-    for (const id in buildingsObj) {
-      const b = buildingsObj[id];
-      const wxy = getWorldXY(b);
-      if (!wxy) continue;
-      count++;
-      if (wxy.wx < minX) minX = wxy.wx;
-      if (wxy.wy < minY) minY = wxy.wy;
-      if (wxy.wx > maxX) maxX = wxy.wx;
-      if (wxy.wy > maxY) maxY = wxy.wy;
-    }
-
-    if (!count) {
-      return { ok: false, count: 0, minX: 0, minY: 0, maxX: 0, maxY: 0 };
-    }
-    return { ok: true, count, minX, minY, maxX, maxY };
+  function makeIdempotencyKey(prefix = "op") {
+    // lightweight uniqueness for local client
+    const r = Math.random().toString(16).slice(2);
+    return `${prefix}-${Date.now()}-${r}`;
   }
 
-  function isFiniteMapLike(bounds, viewW, viewH) {
-    // True if all buildings fit inside [0..viewW-1] and [0..viewH-1] and are non-negative.
-    if (!bounds?.ok) return false;
-    if (!Number.isFinite(viewW) || !Number.isFinite(viewH) || viewW <= 0 || viewH <= 0) return false;
-    return (
-      bounds.minX >= 0 &&
-      bounds.minY >= 0 &&
-      bounds.maxX <= (viewW - 1) &&
-      bounds.maxY <= (viewH - 1)
-    );
+  // ============================================================
+  // Session (localStorage)
+  // ============================================================
+  IsoCity.session = IsoCity.session || {
+    apiBase: cfg.API_BASE,
+    userId: cfg.USER_ID,
+
+    load() {
+      const raw = global.localStorage?.getItem("isocity.session");
+      if (!raw) return;
+      const s = safeJsonParse(raw, null);
+      if (!s) return;
+      if (typeof s.apiBase === "string" && s.apiBase.trim()) this.apiBase = s.apiBase.trim();
+      if (typeof s.userId === "string" && s.userId.trim()) this.userId = s.userId.trim();
+      cfg.API_BASE = this.apiBase;
+      cfg.USER_ID = this.userId;
+    },
+
+    save() {
+      cfg.API_BASE = this.apiBase;
+      cfg.USER_ID = this.userId;
+      try {
+        global.localStorage?.setItem("isocity.session", JSON.stringify({ apiBase: this.apiBase, userId: this.userId }));
+      } catch {
+        /* ignore */
+      }
+    },
+
+    set({ apiBase, userId }) {
+      if (typeof apiBase === "string" && apiBase.trim()) this.apiBase = apiBase.trim().replace(/\/$/, "");
+      if (typeof userId === "string" && userId.trim()) this.userId = userId.trim();
+      this.save();
+    },
+  };
+
+  function apiBase() {
+    return IsoCity.session?.apiBase || cfg.API_BASE;
+  }
+  function userId() {
+    return IsoCity.session?.userId || cfg.USER_ID;
   }
 
-  function centerOffsetOnBounds(bounds, viewW, viewH) {
-    // Center viewport on the center of the buildings bounding box.
-    // offset = center - halfViewport
-    const halfW = (viewW - 1) / 2;
-    const halfH = (viewH - 1) / 2;
-    const cx = (bounds.minX + bounds.maxX) / 2;
-    const cy = (bounds.minY + bounds.maxY) / 2;
-    return {
-      offsetX: Math.round(cx - halfW),
-      offsetY: Math.round(cy - halfH),
-    };
-  }
-
-  // =========================
-  // STATE
-  // =========================
+  // ============================================================
+  // State
+  // ============================================================
   IsoCity.state = {
     canvas: null,
     ctx: null,
 
-    // viewport/world model
     world: {
       view: {
         w: clampInt(cfg.VIEWPORT_W, 7),
         h: clampInt(cfg.VIEWPORT_H, 7),
-
         // WORLD coord of viewport top-left tile
-        // IMPORTANT: default to 0,0 because backend (today) is finite (0..6).
-        // Infinite-world centering is computed after loadGameState based on bounds.
-        offsetX: 0,
-        offsetY: 0,
+        offsetX: -Math.floor(clampInt(cfg.VIEWPORT_W, 7) / 2),
+        offsetY: -Math.floor(clampInt(cfg.VIEWPORT_H, 7) / 2),
       },
-      origin: { x: 0, y: 0 }, // screen origin for iso draw
+      origin: { x: 0, y: 0 },
+      bounds: { min_x: -3, max_x: 3, min_y: -3, max_y: 3 },
+      radius: 3,
     },
 
-    // data
+    // data from backend
     gameState: null,
 
     // viewport grid (local coords [vx][vy])
     grid: allocGrid(clampInt(cfg.VIEWPORT_W, 7), clampInt(cfg.VIEWPORT_H, 7)),
-    placedBuildings: {}, // "vx_vy" -> buildingId
+    placedBuildings: {},
 
-    // hover in viewport coords
+    // hover/selection
     hoverX: -1,
     hoverY: -1,
     hoverBuilding: null,
+    selectedBuildingId: null,
 
-    // UI status
+    // UI
     lastStatus: "",
     lastStatusAt: 0,
 
@@ -124,183 +134,265 @@
 
     // fetch lock
     loadInFlight: false,
+    firstLoadDone: false,
   };
 
+  // ============================================================
+  // World helpers
+  // ============================================================
+  function clampOffsetToBounds() {
+    const s = IsoCity.state;
+    const v = s.world.view;
+    const b = s.world.bounds;
+
+    // If the viewport is larger than the world, "max" can fall below "min".
+    // In that case we pin to min bounds (the world is effectively fully visible).
+    const maxOx = Math.max(b.min_x, b.max_x - (v.w - 1));
+    const maxOy = Math.max(b.min_y, b.max_y - (v.h - 1));
+
+    v.offsetX = Math.max(b.min_x, Math.min(v.offsetX, maxOx));
+    v.offsetY = Math.max(b.min_y, Math.min(v.offsetY, maxOy));
+  }
+
   IsoCity.world = {
-    // convert viewport tile -> world tile
     viewToWorld(vx, vy) {
       const v = IsoCity.state.world.view;
       return { wx: v.offsetX + vx, wy: v.offsetY + vy };
     },
 
-    // convert world tile -> viewport tile (may be outside)
     worldToView(wx, wy) {
       const v = IsoCity.state.world.view;
       return { vx: wx - v.offsetX, vy: wy - v.offsetY };
-    },
-
-    // keep viewport centered on canvas (purely visual)
-    recenter() {
-      const s = IsoCity.state;
-      if (!s.canvas) return;
-
-      const v = s.world.view;
-      const tw = cfg.tileWidth;
-      const th = cfg.tileHeight;
-
-      const worldW = (v.w + v.h) * (tw / 2);
-      const worldH = (v.w + v.h) * (th / 2);
-
-      s.world.origin.x = Math.floor(s.canvas.width / 2 - worldW / 2);
-      // this keeps the diamond in a nice "upper-ish" position
-      s.world.origin.y = Math.floor(s.canvas.height / 4);
-      // (worldH isn't used directly; this heuristic looks good for iso)
-    },
-
-    // move viewport by tile units in WORLD coords
-    shiftView(dx, dy) {
-      const s = IsoCity.state;
-      s.world.view.offsetX += clampInt(dx, 0);
-      s.world.view.offsetY += clampInt(dy, 0);
-      IsoCity.api.loadGameState();
     },
 
     setViewSize(w, h) {
       const s = IsoCity.state;
       const W = clampInt(w, s.world.view.w);
       const H = clampInt(h, s.world.view.h);
-      if (!Number.isFinite(W) || !Number.isFinite(H) || W <= 0 || H <= 0) return;
-
+      if (W <= 0 || H <= 0) return;
       s.world.view.w = W;
       s.world.view.h = H;
       s.grid = allocGrid(W, H);
       s.placedBuildings = {};
+      clampOffsetToBounds();
       IsoCity.world.recenter();
+      IsoCity.world.rebuildViewport();
     },
 
     setOffset(ox, oy) {
       const s = IsoCity.state;
       s.world.view.offsetX = clampInt(ox, s.world.view.offsetX);
       s.world.view.offsetY = clampInt(oy, s.world.view.offsetY);
+      clampOffsetToBounds();
+      IsoCity.world.rebuildViewport();
+    },
+
+    shiftView(dx, dy) {
+      const s = IsoCity.state;
+      s.world.view.offsetX += clampInt(dx, 0);
+      s.world.view.offsetY += clampInt(dy, 0);
+      clampOffsetToBounds();
+      IsoCity.world.rebuildViewport();
+    },
+
+    recenter() {
+      // Visual recentering is handled in iso_render.js (recenterOrigin).
+      // We just call it from here when canvas size changes.
+      IsoCity.render?.recenterOrigin?.();
+    },
+
+    recenterToZero() {
+      const s = IsoCity.state;
+      const v = s.world.view;
+      v.offsetX = -Math.floor(v.w / 2);
+      v.offsetY = -Math.floor(v.h / 2);
+      clampOffsetToBounds();
+      IsoCity.world.rebuildViewport();
+    },
+
+    rebuildViewport() {
+      const s = IsoCity.state;
+      const v = s.world.view;
+
+      // clear grid
+      if (!s.grid || s.grid.length !== v.w || s.grid[0]?.length !== v.h) {
+        s.grid = allocGrid(v.w, v.h);
+      } else {
+        for (let x = 0; x < v.w; x++) for (let y = 0; y < v.h; y++) s.grid[x][y] = null;
+      }
+      s.placedBuildings = {};
+      s.hoverBuilding = null;
+
+      const data = s.gameState;
+      if (!data?.buildings) return;
+
+      for (const id in data.buildings) {
+        const b = data.buildings[id];
+        const wxy = getWorldXY(b);
+        if (!wxy) continue;
+
+        const vv = IsoCity.world.worldToView(wxy.wx, wxy.wy);
+        const vx = vv.vx;
+        const vy = vv.vy;
+        if (vx < 0 || vy < 0 || vx >= v.w || vy >= v.h) continue;
+
+        b._id = id;
+        b._wx = wxy.wx;
+        b._wy = wxy.wy;
+
+        s.grid[vx][vy] = b;
+        s.placedBuildings[`${vx}_${vy}`] = id;
+      }
     },
   };
 
-  // =========================
+  // ============================================================
   // UI helpers
-  // =========================
+  // ============================================================
   IsoCity.ui = {
-    updateUI(gold, wood, extra = "") {
-      const ui = document.getElementById("ui");
-      if (!ui) return;
-      ui.innerHTML = `
-        <strong>Gold:</strong> ${Math.round(gold)}<br>
-        <strong>Wood:</strong> ${Math.round(wood)}<br>
-        <small>user: ${cfg.USER_ID}</small>
-        ${extra ? `<br><em>${extra}</em>` : ""}
-      `;
+    updateHUD(data) {
+      const gold = data?.resources?.gold ?? 0;
+      const wood = data?.resources?.wood ?? 0;
+      const gems = data?.resources?.gems ?? 0;
+
+      const elUser = document.getElementById("hudUser");
+      const elGold = document.getElementById("hudGold");
+      const elWood = document.getElementById("hudWood");
+      const elGems = document.getElementById("hudGems");
+      const elWorld = document.getElementById("hudWorld");
+
+      if (elUser) elUser.textContent = userId();
+      if (elGold) elGold.textContent = String(Math.round(gold));
+      if (elWood) elWood.textContent = String(Math.round(wood));
+      if (elGems) elGems.textContent = String(Math.round(gems));
+
+      if (elWorld) {
+        const r = data?.world?.radius;
+        const b = data?.world?.bounds;
+        if (Number.isFinite(r) && b) {
+          elWorld.textContent = `r=${r} (${b.min_x}..${b.max_x}, ${b.min_y}..${b.max_y})`;
+        }
+      }
     },
 
     setStatus(msg) {
       const s = IsoCity.state;
       s.lastStatus = msg || "";
-      s.lastStatusAt = performance.now();
+      s.lastStatusAt = nowMs();
+      const el = document.getElementById("hudStatus");
+      if (el) el.textContent = s.lastStatus;
     },
 
-    statusIsFresh() {
+    statusIsFresh(ms = 4500) {
       const s = IsoCity.state;
-      return s.lastStatus && performance.now() - s.lastStatusAt < 5000;
+      return s.lastStatus && nowMs() - s.lastStatusAt < ms;
     },
   };
 
-  // =========================
+  // --- backward-compat for older main.js (expects IsoCity.ui.updateUI) ---
+  IsoCity.ui.updateUI = function (gold, wood, extra = "") {
+    const s = IsoCity.state;
+    s.gameState = s.gameState || {};
+    s.gameState.resources = s.gameState.resources || {};
+    if (Number.isFinite(gold)) s.gameState.resources.gold = gold;
+    if (Number.isFinite(wood)) s.gameState.resources.wood = wood;
+
+    // keep current UI behavior
+    IsoCity.ui.updateHUD(s.gameState);
+    if (extra) IsoCity.ui.setStatus(extra);
+  };
+
+
+  // ============================================================
   // API
-  // =========================
+  // ============================================================
+  async function apiFetch(path, init) {
+    const url = `${apiBase()}${path}`;
+    return fetch(url, { cache: "no-store", ...init });
+  }
+
   IsoCity.api = {
-    async loadGameState() {
+    async loadGameState({ soft = false } = {}) {
       const s = IsoCity.state;
       if (s.loadInFlight) return;
       s.loadInFlight = true;
 
       try {
-        const res = await fetch(`${cfg.API_BASE}/city/${cfg.USER_ID}`, { cache: "no-store" });
-        if (!res.ok) throw new Error(`Backend ${res.status}`);
+        const res = await apiFetch(`/city/${encodeURIComponent(userId())}`);
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`GET /city failed ${res.status}: ${text}`);
+        }
         const data = await res.json();
         s.gameState = data;
 
-        // Optional: backend-driven viewport size (if you add it later)
-        const bw = data?.world?.view?.w ?? data?.world?.grid?.w;
-        const bh = data?.world?.view?.h ?? data?.world?.grid?.h;
-        if (Number.isFinite(bw) && Number.isFinite(bh)) {
-          IsoCity.world.setViewSize(bw, bh);
+        // world info
+        if (data?.world?.bounds) {
+          s.world.bounds = { ...s.world.bounds, ...data.world.bounds };
         }
+        if (Number.isFinite(data?.world?.radius)) s.world.radius = data.world.radius;
 
-        const v = s.world.view;
+        // fixed viewport size (mobile-first)
+        IsoCity.world.setViewSize(clampInt(cfg.VIEWPORT_W, 7), clampInt(cfg.VIEWPORT_H, 7));
 
-        // Ensure grid matches current view
-        if (!s.grid || s.grid.length !== v.w || s.grid[0]?.length !== v.h) {
-          s.grid = allocGrid(v.w, v.h);
+        // first load: recenter around (0,0)
+        if (!s.firstLoadDone) {
+          s.firstLoadDone = true;
+          IsoCity.world.recenterToZero();
         } else {
-          for (let x = 0; x < v.w; x++) for (let y = 0; y < v.h; y++) s.grid[x][y] = null;
-        }
-        s.placedBuildings = {};
-
-        IsoCity.ui.updateUI(data.resources?.gold ?? 0, data.resources?.wood ?? 0);
-
-        // === KEY FIX ===
-        // Auto-detect finite 7x7 coords (0..6) and force offset=0 so you never lose buildings.
-        // Otherwise (infinite world), center on buildings bounds.
-        const bounds = getBuildingsBounds(data.buildings);
-        if (bounds.ok) {
-          if (isFiniteMapLike(bounds, v.w, v.h)) {
-            IsoCity.world.setOffset(0, 0);
-          } else {
-            const { offsetX, offsetY } = centerOffsetOnBounds(bounds, v.w, v.h);
-            IsoCity.world.setOffset(offsetX, offsetY);
-          }
-        } else {
-          // no buildings => keep offset as-is, but if it became NaN anywhere, reset:
-          if (!Number.isFinite(v.offsetX) || !Number.isFinite(v.offsetY)) {
-            IsoCity.world.setOffset(0, 0);
-          }
+          clampOffsetToBounds();
+          IsoCity.world.rebuildViewport();
         }
 
-        // Recenter visuals (canvas origin), not world coords
-        IsoCity.world.recenter();
+        IsoCity.ui.updateHUD(data);
 
-        // Place buildings into viewport grid (based on WORLD coords)
-        for (const id in data.buildings) {
-          const b = data.buildings[id];
-          const wxy = getWorldXY(b);
-          if (!wxy) continue;
-
-          const vv = IsoCity.world.worldToView(wxy.wx, wxy.wy);
-          const vx = vv.vx;
-          const vy = vv.vy;
-
-          if (vx < 0 || vy < 0 || vx >= v.w || vy >= v.h) continue;
-
-          b._id = id;
-          b._wx = wxy.wx;
-          b._wy = wxy.wy;
-
-          s.grid[vx][vy] = b;
-          s.placedBuildings[`${vx}_${vy}`] = id;
-        }
-
-        IsoCity.ui.setStatus("Stav načten.");
+        if (!soft) IsoCity.ui.setStatus("Stav načten.");
       } catch (e) {
         console.error(e);
-        IsoCity.ui.updateUI(500, 300, "Offline mód");
-        IsoCity.ui.setStatus("Chyba komunikace se serverem");
+        if (!soft) IsoCity.ui.setStatus("Chyba komunikace se serverem");
       } finally {
         s.loadInFlight = false;
       }
     },
 
-    async placeBuilding(type, vx, vy) {
+    async newGame({ desiredUserId = "" } = {}) {
+      const body = desiredUserId?.trim() ? { user_id: desiredUserId.trim() } : { user_id: null };
+      const res = await apiFetch(`/new_game`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`new_game failed ${res.status}: ${text}`);
+      }
+      const data = await res.json();
+      const uid = data?.user_id;
+      if (uid) {
+        IsoCity.session.set({ userId: uid, apiBase: apiBase() });
+      }
+      IsoCity.ui.setStatus("Nový hráč vytvořen.");
+      await IsoCity.api.loadGameState();
+      return data;
+    },
+
+    async devReset({ wipe = true } = {}) {
+      const res = await apiFetch(`/dev/reset/${encodeURIComponent(userId())}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wipe: !!wipe }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`dev/reset failed ${res.status}: ${text}`);
+      }
+      IsoCity.ui.setStatus("Reset hotov.");
+      await IsoCity.api.loadGameState();
+    },
+
+    async placeBuilding(type, vx, vy, rotation = 0) {
       const s = IsoCity.state;
       const v = s.world.view;
-
       if (vx < 0 || vy < 0 || vx >= v.w || vy >= v.h) {
         IsoCity.ui.setStatus("Mimo mapu");
         return;
@@ -308,84 +400,129 @@
 
       const { wx, wy } = IsoCity.world.viewToWorld(vx, vy);
 
-      try {
-        const gold = s.gameState?.resources?.gold;
-        const cost = cfg.BUILD_COST_GOLD[type];
-        if (typeof gold === "number" && typeof cost === "number" && gold < cost) {
-          IsoCity.ui.setStatus(`Nedostatek zlata (${cost}g)`);
-          return;
-        }
-
-        const res = await fetch(`${cfg.API_BASE}/city/${cfg.USER_ID}/place`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // keep compatible with current backend
-          body: JSON.stringify({ building_type: type, x: wx, y: wy, world_x: wx, world_y: wy }),
-        });
-
-        if (!res.ok) {
-          const text = await res.text();
-          IsoCity.ui.setStatus(`Nelze postavit: ${text}`);
-          return;
-        }
-
-        IsoCity.ui.setStatus(`Postaveno: ${type}`);
-        await IsoCity.api.loadGameState();
-      } catch (e) {
-        console.error(e);
-        IsoCity.ui.setStatus("Chyba při stavbě");
+      // Optional client-side affordability check using catalog
+      const cost = s.gameState?.catalog?.[type]?.build_cost_gold;
+      const gold = s.gameState?.resources?.gold;
+      if (Number.isFinite(cost) && Number.isFinite(gold) && gold < cost) {
+        IsoCity.ui.setStatus(`Nedostatek zlata (${Math.round(cost)}g)`);
+        return;
       }
+
+      const res = await apiFetch(`/city/${encodeURIComponent(userId())}/place`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ building_type: type, x: wx, y: wy, rotation }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        IsoCity.ui.setStatus(`Nelze postavit: ${text}`);
+        return;
+      }
+
+      IsoCity.ui.setStatus(`Postaveno: ${type}`);
+      await IsoCity.api.loadGameState({ soft: true });
     },
 
     async upgradeBuilding(buildingId) {
-      if (!buildingId) {
-        IsoCity.ui.setStatus("Upgrade: chybí buildingId");
+      if (!buildingId) return;
+      const res = await apiFetch(`/city/${encodeURIComponent(userId())}/upgrade`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ building_id: buildingId }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        IsoCity.ui.setStatus(`Upgrade selhal: ${text}`);
         return;
       }
-      try {
-        const res = await fetch(`${cfg.API_BASE}/city/${cfg.USER_ID}/upgrade`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ building_id: buildingId }),
-        });
-
-        if (!res.ok) {
-          const text = await res.text();
-          IsoCity.ui.setStatus(`Upgrade selhal: ${text}`);
-          return;
-        }
-
-        IsoCity.ui.setStatus("Upgrade spuštěn");
-        await IsoCity.api.loadGameState();
-      } catch (e) {
-        console.error(e);
-        IsoCity.ui.setStatus("Chyba upgradu");
-      }
+      IsoCity.ui.setStatus("Upgrade spuštěn");
+      await IsoCity.api.loadGameState({ soft: true });
     },
 
     async demolishBuilding(buildingId) {
-      if (!buildingId) {
-        IsoCity.ui.setStatus("Demolish: chybí buildingId");
+      if (!buildingId) return;
+      const res = await apiFetch(`/city/${encodeURIComponent(userId())}/demolish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ building_id: buildingId }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        IsoCity.ui.setStatus(`Demolice selhala: ${text}`);
         return;
       }
-      try {
-        const res = await fetch(`${cfg.API_BASE}/city/${cfg.USER_ID}/demolish`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ building_id: buildingId }),
-        });
-        if (!res.ok) {
-          const text = await res.text();
-          IsoCity.ui.setStatus(`Demolish selhal: ${text}`);
-          return;
-        }
-        IsoCity.ui.setStatus("Budova zbourána");
-        await IsoCity.api.loadGameState();
-      } catch (e) {
-        console.error(e);
-        IsoCity.ui.setStatus("Chyba demolice");
+      IsoCity.ui.setStatus("Budova zbourána");
+      await IsoCity.api.loadGameState({ soft: true });
+    },
+
+    async creditGems({ gems, provider = "dev", purchaseId = null } = {}) {
+      const g = clampInt(gems, 0);
+      if (g <= 0) {
+        IsoCity.ui.setStatus("Zadej počet gemů > 0");
+        return;
       }
+      const idem = makeIdempotencyKey("credit_gems");
+      const res = await apiFetch(`/shop/credit_gems`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idem,
+        },
+        body: JSON.stringify({ user_id: userId(), gems: g, provider, purchase_id: purchaseId || idem }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        IsoCity.ui.setStatus(`Credit gems selhal: ${text}`);
+        return;
+      }
+      IsoCity.ui.setStatus(`Gemy připsány (+${g})`);
+      await IsoCity.api.loadGameState({ soft: true });
+    },
+
+    async expandWithGems({ steps = 1 } = {}) {
+      const st = Math.max(1, clampInt(steps, 1));
+      const idem = makeIdempotencyKey("expand_gems");
+      const res = await apiFetch(`/city/${encodeURIComponent(userId())}/expand_gems`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idem,
+        },
+        body: JSON.stringify({ steps: st }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        IsoCity.ui.setStatus(`Expand selhal: ${text}`);
+        return;
+      }
+      IsoCity.ui.setStatus(`Svět rozšířen (+${st})`);
+      await IsoCity.api.loadGameState();
+    },
+
+    async speedupUpgrade({ buildingId, mode = "finish", seconds = null } = {}) {
+      if (!buildingId) {
+        IsoCity.ui.setStatus("Nejprve vyber budovu");
+        return;
+      }
+      const idem = makeIdempotencyKey("speedup");
+      const payload = { building_id: buildingId, mode };
+      if (mode === "reduce") payload.seconds = clampInt(seconds, 0);
+      const res = await apiFetch(`/city/${encodeURIComponent(userId())}/speedup_upgrade`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idem,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        IsoCity.ui.setStatus(`Speedup selhal: ${text}`);
+        return;
+      }
+      IsoCity.ui.setStatus("Speedup použit");
+      await IsoCity.api.loadGameState({ soft: true });
     },
   };
 })(window);
-

@@ -1,35 +1,109 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="cs">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IsoCity - Medieval Builder</title>
-  <style>
-    body { background: #111; color: #fff; font-family: Arial; margin: 0; }
-    #ui { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 8px; z-index: 10; }
-    #canvas { display: block; margin: 0 auto; }
-    #tools { position: absolute; bottom: 10px; left: 10px; }
-    #tools img { width: 50px; cursor: pointer; margin: 5px; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>IsoCity</title>
+  <link rel="stylesheet" href="css/main.css">
 </head>
 <body>
-  <div id="ui">
-    Gold: 500<br>
-    Wood: 300
-  </div>
-  <canvas id="canvas" width="900" height="600"></canvas>
-  <div id="tools">
-    <img src="assets/realm/Castles/castlekeep_01.png" onclick="selectType('townhall')">
-    <img src="assets/realm/Fields Farms/field_01a.png" onclick="selectType('farm')">
-    <img src="assets/realm/Mills/windmill_01a.png" onclick="selectType('lumbermill')">
-    <img src="assets/realm/Houses/house_01a.png" onclick="selectType('house')">
-    <img src="assets/realm/Barracks/Barracks_01.png" onclick="selectType('barracks')">
-  </div>
-<script defer src="js/iso_config.js"></script>
-<script defer src="js/iso_api_state.js"></script>
-<script defer src="js/iso_render.js"></script>
-<script defer src="js/iso_input_ui.js"></script>
-<script defer src="js/main.js"></script>
+  <div id="hud">
+    <div id="hudLeft">
+      <div class="hudRow">
+        <span class="hudLabel">Hráč:</span> <span id="hudUser">-</span>
+      </div>
+      <div class="hudRow">
+        <span class="hudLabel">Zlato:</span> <span id="hudGold">0</span>
+        <span class="hudSep">•</span>
+        <span class="hudLabel">Dřevo:</span> <span id="hudWood">0</span>
+        <span class="hudSep">•</span>
+        <span class="hudLabel">Gemy:</span> <span id="hudGems">0</span>
+      </div>
+      <div class="hudRow hudSmall">
+        <span id="hudWorld"></span>
+      </div>
+      <div class="hudRow hudSmall" id="hudStatus"></div>
+    </div>
 
+    <div id="hudRight">
+      <button id="btnMenu" class="iconBtn" aria-label="Menu">☰</button>
+      <button id="btnRecenter" class="iconBtn" aria-label="Na střed">◎</button>
+    </div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <div id="dpad" aria-label="Pohyb mapy">
+    <button id="panUp" class="padBtn">▲</button>
+    <div class="padMid">
+      <button id="panLeft" class="padBtn">◀</button>
+      <button id="panRight" class="padBtn">▶</button>
+    </div>
+    <button id="panDown" class="padBtn">▼</button>
+  </div>
+
+  <div id="menu" class="hidden">
+    <div id="menuCard">
+      <div class="menuHeader">
+        <div class="menuTitle">Menu</div>
+        <button id="btnMenuClose" class="iconBtn" aria-label="Zavřít">✕</button>
+      </div>
+
+      <div class="menuSection">
+        <div class="menuSectionTitle">Přihlášení</div>
+        <label class="menuLabel">API_BASE</label>
+        <input id="inpApiBase" class="menuInput" placeholder="https://city.api..." />
+        <label class="menuLabel">USER_ID</label>
+        <input id="inpUserId" class="menuInput" placeholder="např. test123" />
+        <div class="menuRow">
+          <button id="btnSaveSession" class="menuBtn">Uložit & načíst</button>
+          <button id="btnNewGame" class="menuBtn">Nový hráč</button>
+        </div>
+      </div>
+
+      <div class="menuSection">
+        <div class="menuSectionTitle">Vývoj / reset</div>
+        <div class="menuRow">
+          <button id="btnDevReset" class="menuBtn danger">Reset hry</button>
+        </div>
+        <div class="menuHint">(vyžaduje backend s <code>ALLOW_DEV_ENDPOINTS=1</code>)</div>
+      </div>
+
+      <div class="menuSection">
+        <div class="menuSectionTitle">Obchod</div>
+        <label class="menuLabel">Připsat gemy</label>
+        <div class="menuRow">
+          <input id="inpCreditGems" class="menuInput" inputmode="numeric" value="100" />
+          <button id="btnCreditGems" class="menuBtn">Koupit</button>
+        </div>
+        <div class="menuHint">(vyžaduje backend s <code>ENABLE_SHOP_ENDPOINTS=1</code>)</div>
+      </div>
+
+      <div class="menuSection">
+        <div class="menuSectionTitle">Gemy → svět / čas</div>
+
+        <label class="menuLabel">Rozšířit svět (kroky)</label>
+        <div class="menuRow">
+          <input id="inpExpandSteps" class="menuInput" inputmode="numeric" value="1" />
+          <button id="btnExpandGems" class="menuBtn">Rozšířit</button>
+        </div>
+        <div class="menuHint">(aktuálně je <code>/expand_gems</code> a <code>/speedup_upgrade</code> v DEV režimu)</div>
+
+        <div class="menuDivider"></div>
+        <div class="menuSectionTitle">Zrychlit upgrade vybrané budovy</div>
+        <div class="menuRow">
+          <button id="btnSpeedupFinish" class="menuBtn">Dokončit</button>
+          <button id="btnSpeedup5m" class="menuBtn">-5 minut</button>
+        </div>
+        <div class="menuHint">Vyber budovu s probíhajícím upgradem klepnutím na ni.</div>
+      </div>
+    </div>
+  </div>
+
+  <script defer src="js/iso_config.js"></script>
+  <script defer src="js/iso_api_state.js"></script>
+  <script defer src="js/iso_render.js"></script>
+  <script defer src="js/iso_input_ui.js"></script>
+  <script defer src="js/main.js"></script>
 </body>
 </html>
