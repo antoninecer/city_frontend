@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="cs">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>IsoCity</title>
   <link rel="stylesheet" href="css/main.css">
 </head>
+
 <body>
   <div id="hud">
     <div id="hudLeft">
@@ -97,6 +99,29 @@
         </div>
         <div class="menuHint">Vyber budovu s probíhajícím upgradem klepnutím na ni.</div>
       </div>
+
+      <div class="menuSection">
+        <div class="menuSectionTitle">Sdílené město</div>
+
+        <label class="menuLabel">Pozvat hráče (role)</label>
+        <div class="menuRow">
+          <select id="inpInviteRole" class="menuInput">
+            <option value="editor">Editor</option>
+            <option value="viewer">Viewer</option>
+          </select>
+          <button id="btnCreateInvite" class="menuBtn">Vytvořit pozvánku</button>
+        </div>
+        <label class="menuLabel">Invite token</label>
+        <input id="inpInviteToken" class="menuInput" placeholder="token se objeví zde…" />
+        <div class="menuRow">
+          <button id="btnShareInvite" class="menuBtn">Sdílet pozvánku</button>
+        </div>
+
+        <div class="menuRow">
+          <button id="btnAcceptInvite" class="menuBtn">Připojit se</button>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -106,4 +131,5 @@
   <script defer src="js/iso_input_ui.js"></script>
   <script defer src="js/main.js"></script>
 </body>
+
 </html>

@@ -6,6 +6,7 @@
  * - připojí UI menu (new_game, reset, credit gems, expand, speedup)
  * - spustí render loop + periodický refresh stavu
  */
+console.log("MAIN.JS LOADED WITH INVITES");
 
 (function (global) {
   const IsoCity = (global.IsoCity = global.IsoCity || {});
@@ -138,6 +139,76 @@
       const bid = IsoCity.state.selectedBuildingId;
       await IsoCity.api.speedupUpgrade({ buildingId: bid, mode: "reduce", seconds: 300 });
     });
+
+    // === INVITES (robust binding) ===
+    const btnCreateInvite = document.getElementById("btnCreateInvite");
+    if (btnCreateInvite) {
+      btnCreateInvite.onclick = async () => {
+        try {
+          const role = document.getElementById("inpInviteRole")?.value || "editor";
+          console.log("Creating invite, role=", role);
+
+          const res = await IsoCity.api.createInvite({ role });
+
+          console.log("Invite created:", res);
+
+          const inp = document.getElementById("inpInviteToken");
+          if (inp) inp.value = res.invite_token;
+
+          IsoCity.ui.setStatus("Pozvánka vytvořena");
+        } catch (e) {
+          console.error(e);
+          IsoCity.ui.setStatus(String(e.message || e));
+        }
+      };
+    }
+
+    $("btnAcceptInvite")?.addEventListener("click", async () => {
+      try {
+        const token = $("inpInviteToken")?.value?.trim();
+        const uid = $("inpUserId")?.value?.trim();
+        if (!token || !uid) {
+          IsoCity.ui.setStatus("Chybí token nebo USER_ID");
+          return;
+        }
+        await IsoCity.api.acceptInvite({ token, newUserId: uid });
+        IsoCity.session.set({ userId: uid });
+        await IsoCity.api.loadGameState();
+        IsoCity.ui.setStatus("Připojeno k městu");
+        closeMenu();
+      } catch (e) {
+        IsoCity.ui.setStatus(String(e.message || e));
+      }
+    });
+
+    // === SHARE INVITE ===
+    $("btnShareInvite")?.addEventListener("click", async () => {
+      const token = $("inpInviteToken")?.value?.trim();
+      if (!token) {
+        IsoCity.ui.setStatus("Nejprve vytvoř pozvánku");
+        return;
+      }
+
+      const shareText = `Pozvánka do města IsoCity:\n\n${token}`;
+
+      try {
+        if (navigator.share) {
+          await navigator.share({
+            title: "IsoCity – pozvánka",
+            text: shareText,
+          });
+          IsoCity.ui.setStatus("Pozvánka sdílena");
+        } else {
+          await navigator.clipboard.writeText(token);
+          IsoCity.ui.setStatus("Token zkopírován do schránky");
+        }
+      } catch (e) {
+        console.error(e);
+        IsoCity.ui.setStatus("Sdílení zrušeno");
+      }
+    });
+
+
   }
 
   function loop() {

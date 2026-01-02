@@ -524,5 +524,35 @@
       IsoCity.ui.setStatus("Speedup použit");
       await IsoCity.api.loadGameState({ soft: true });
     },
+
+        async createInvite({ role = "editor" } = {}) {
+      const res = await apiFetch(`/city/${encodeURIComponent(userId())}/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+      return res.json();
+    },
+
+    async acceptInvite({ token, newUserId } = {}) {
+      const res = await apiFetch(`/invite/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token,
+          user_id: newUserId,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+      return res.json();
+    },
+
   };
 })(window);
