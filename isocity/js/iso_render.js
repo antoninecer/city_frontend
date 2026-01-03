@@ -5,7 +5,10 @@
   const U = IsoCity.util;
 
   function isoToScreen(vx, vy) {
-    return { sx: (vy - vx) * (cfg.tileWidth / 2), sy: (vx + vy) * (cfg.tileHeight / 2) };
+    return {
+      sx: (vy - vx) * (cfg.tileWidth / 2),
+      sy: (vx + vy) * (cfg.tileHeight / 2),
+    };
   }
 
   // Center the viewport (view.w x view.h) on the canvas.
@@ -48,13 +51,100 @@
   }
 
   function buildingScaleFor(img) {
-    const vf = cfg.visualFit || { maxW: 1.6, maxH: 3.2, minScale: 0.2, maxScale: 1.0, groundLiftPx: 0 };
+    const vf = cfg.visualFit || {
+      maxW: 1.6,
+      maxH: 3.2,
+      minScale: 0.2,
+      maxScale: 1.0,
+      groundLiftPx: 0,
+    };
     const maxW = cfg.tileWidth * vf.maxW;
     const maxH = cfg.tileHeight * vf.maxH;
     const sW = maxW / img.width;
     const sH = maxH / img.height;
     const sc = Math.min(sW, sH);
     return Math.min(vf.maxScale, Math.max(vf.minScale, sc));
+  }
+
+  // -------------------------
+  // Upgrade overlay helpers
+  // -------------------------
+  function clamp(v, a, b) {
+    return Math.max(a, Math.min(b, v));
+  }
+
+  function fmtTime(sec) {
+    const s = Math.max(0, Math.floor(sec));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}:${String(r).padStart(2, "0")}`;
+  }
+
+  function nowSec() {
+    const s = IsoCity.state;
+    // Prefer serverTime if you keep it updated; otherwise local time.
+    // If you later add s.timeOffset = server_time - Date.now()/1000, use that here.
+    return (typeof s.serverTime === "number" && isFinite(s.serverTime))
+      ? s.serverTime
+      : Date.now() / 1000;
+  }
+
+  function drawUpgradeOverlay(ctx, b, img, gx, gy, dx, dy, sc) {
+    if (!(b && b.upgrade_start && b.upgrade_end)) return;
+
+    const n = nowSec();
+    const us = Number(b.upgrade_start);
+    const ue = Number(b.upgrade_end);
+    if (!isFinite(us) || !isFinite(ue) || ue <= us) return;
+
+    const total = ue - us;
+    const done = n - us;
+    const pct = clamp(done / total, 0, 1);
+    const remain = Math.max(0, ue - n);
+
+    const spriteW = img.width * sc;
+    const spriteH = img.height * sc;
+
+    // bar sizing: based on sprite width, clamped
+    const barW = clamp(spriteW * 0.55, 72, 140);
+    const barH = clamp(spriteH * 0.055, 8, 14);
+
+    // bar position: INSIDE the sprite around mid-height (no overhang)
+    const bx = gx - barW / 2;
+    const by = dy + spriteH * 0.58;
+
+    // background plate
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(0,0,0,0.70)";
+    ctx.fillRect(bx - 2, by - 2, barW + 4, barH + 4);
+
+    // empty bar
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    ctx.fillRect(bx, by, barW, barH);
+
+    // fill
+    ctx.fillStyle = "rgba(76,217,100,0.95)";
+    ctx.fillRect(bx, by, barW * pct, barH);
+
+    // thin outline
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx - 0.5, by - 0.5, barW + 1, barH + 1);
+
+    // label: time + percent (above bar)
+    const txt = `${fmtTime(remain)} • ${Math.round(pct * 100)}%`;
+    ctx.font = "12px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+
+    // small shadow for readability
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillText(txt, gx + 1, by - 6 + 1);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(txt, gx, by - 6);
+
+    ctx.restore();
   }
 
   IsoCity.render = {
@@ -108,6 +198,16 @@
 
         const b = s.grid?.[t.x]?.[t.y] || null;
 
+        // upgrade tile underglow
+        if (inside && b && b.upgrade_start && b.upgrade_end) {
+          // red-ish tint + outline
+          ctx.fillStyle = "rgba(255,60,60,0.14)";
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "rgba(255,60,60,0.22)";
+          ctx.stroke();
+        }
+
         // hover overlay for empty tile (only inside bounds)
         if (inside && s.uiMode !== "context" && t.x === s.hoverX && t.y === s.hoverY && !b) {
           ctx.fillStyle = "rgba(0,255,0,0.14)";
@@ -153,7 +253,13 @@
         ctx.save();
         if (isHovered) ctx.filter = `drop-shadow(0 0 7px rgba(80,160,255,0.9))`;
         ctx.imageSmoothingEnabled = true;
+
+        // sprite
         ctx.drawImage(img, dx, dy, img.width * sc, img.height * sc);
+
+        // upgrade overlay (bar + time) ON TOP of sprite, but positioned inside sprite bounds
+        drawUpgradeOverlay(ctx, b, img, gx, gy, dx, dy, sc);
+
         ctx.restore();
       }
 
@@ -184,4 +290,3 @@
     },
   };
 })(window);
-
