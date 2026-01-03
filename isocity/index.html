@@ -35,14 +35,15 @@
 
   <canvas id="canvas"></canvas>
 
-  <div id="dpad" aria-label="Pohyb mapy">
-    <button id="panUp" class="padBtn">▲</button>
-    <div class="padMid">
-      <button id="panLeft" class="padBtn">◀</button>
-      <button id="panRight" class="padBtn">▶</button>
+  <div id="dpad" aria-label="Pohyb mapy (diagonály)">
+    <div class="padGrid">
+      <button id="panNW" class="padBtn">↖︎</button>
+      <button id="panNE" class="padBtn">↗︎</button>
+      <button id="panSW" class="padBtn">↙︎</button>
+      <button id="panSE" class="padBtn">↘︎</button>
     </div>
-    <button id="panDown" class="padBtn">▼</button>
   </div>
+
 
   <div id="menu" class="hidden">
     <div id="menuCard">

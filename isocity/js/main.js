@@ -79,11 +79,12 @@ console.log("MAIN.JS LOADED WITH INVITES");
       IsoCity.ui.setStatus("Na střed.");
     });
 
-    // D-pad panning
-    $("panUp")?.addEventListener("click", () => IsoCity.world.shiftView(0, -1));
-    $("panDown")?.addEventListener("click", () => IsoCity.world.shiftView(0, 1));
-    $("panLeft")?.addEventListener("click", () => IsoCity.world.shiftView(-1, 0));
-    $("panRight")?.addEventListener("click", () => IsoCity.world.shiftView(1, 0));
+    // D-pad panning – diagonály (dočasně)
+    $("panNW")?.addEventListener("click", () => IsoCity.world.shiftView(0, -1));
+    $("panNE")?.addEventListener("click", () => IsoCity.world.shiftView(-1, 0));
+    $("panSW")?.addEventListener("click", () => IsoCity.world.shiftView(1, 0));
+    $("panSE")?.addEventListener("click", () => IsoCity.world.shiftView(0, 1));
+
 
     // save & load session
     $("btnSaveSession")?.addEventListener("click", async () => {

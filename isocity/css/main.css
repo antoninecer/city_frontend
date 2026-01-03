@@ -22,8 +22,13 @@ canvas {
   display: block;
   width: 100vw;
   height: 100vh;
-  touch-action: none;
+
+  touch-action: auto;     /* zakáže zoom/scroll */
+  pointer-events: auto;  /* ← MUSÍ být auto */
 }
+
+
+/* ================= HUD ================= */
 
 #hud {
   position: fixed;
@@ -80,39 +85,61 @@ canvas {
 
 .iconBtn:active { transform: translateY(1px); }
 
+/* ================= D-PAD ================= */
+
+/* HLAVNÍ KONTEJNER */
 #dpad {
   position: fixed;
-  right: calc(env(safe-area-inset-right, 0) + 10px);
-  bottom: calc(env(safe-area-inset-bottom, 0) + 10px);
-  z-index: 18;
+  right: calc(env(safe-area-inset-right, 0) + 12px);
+  bottom: calc(env(safe-area-inset-bottom, 0) + 12px);
+
+  width: 120px;          /* ← FIX: pevná velikost */
+  height: 120px;
+
+  z-index: 1000;         /* ← MUSÍ být nad canvas */
   background: var(--panel);
-  border-radius: 16px;
+  border-radius: 18px;
   padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+
+  display: grid;
+  place-items: center;
+
   backdrop-filter: blur(6px);
+  pointer-events: auto;
 }
 
-.padMid {
-  display: flex;
+/* 2×2 DIAGONÁLNÍ MŘÍŽKA */
+.padGrid {
+  width: 100%;
+  height: 100%;
+
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
   gap: 8px;
-  justify-content: center;
 }
 
+/* TLAČÍTKA */
 .padBtn {
-  width: 44px;
-  height: 44px;
+  width: 100%;
+  height: 100%;
   border-radius: 14px;
   border: 1px solid rgba(255,255,255,0.2);
   background: rgba(255,255,255,0.08);
   color: var(--text);
-  font-size: 18px;
+  font-size: 22px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  touch-action: manipulation;
 }
 
 .padBtn:active { transform: translateY(1px); }
 
-/* Menu modal */
+/* ================= MENU ================= */
+
 #menu {
   position: fixed;
   inset: 0;
@@ -212,7 +239,11 @@ canvas {
   background: rgba(255,255,255,0.12);
 }
 
+/* MOBIL */
 @media (max-width: 380px) {
   .menuRow { grid-template-columns: 1fr; }
-  #dpad { transform: scale(0.92); transform-origin: bottom right; }
+  #dpad {
+    transform: scale(0.92);
+    transform-origin: bottom right;
+  }
 }

@@ -12,6 +12,14 @@
   const U = IsoCity.util;
   const s = IsoCity.state;
 
+  // --- INPUT MODE ---
+  const isTouch = () =>
+    window.matchMedia("(pointer: coarse)").matches;
+
+  // mobile: remember first tap
+  s.lastTappedTile = null;
+
+
   // -------------------------
   // SAFETY util fallbacks
   // -------------------------
@@ -51,6 +59,7 @@
     s.contextMenu.actions = [];
     s.contextMenu.confirmAction = null;
     s.uiMode = "idle";
+    s.lastTappedTile = null;
   }
 
   // -------------------------
@@ -361,15 +370,46 @@
 
     const b = s.grid?.[vxy.vx]?.[vxy.vy] || null;
 
+    /* =========================
+       📱 MOBILE: 2-TAP LOGIC
+       ========================= */
+    if (isTouch()) {
+      const same =
+        s.lastTappedTile &&
+        s.lastTappedTile.vx === vxy.vx &&
+        s.lastTappedTile.vy === vxy.vy;
+
+      // 1st tap → jen vybrat (jako hover)
+      if (!same) {
+        s.lastTappedTile = { vx: vxy.vx, vy: vxy.vy };
+
+        s.hoverX = vxy.vx;
+        s.hoverY = vxy.vy;
+        s.hoverBuilding = b;
+        s.selectedBuildingId = b?._id || null;
+
+        return; // ⛔ NEOTEVÍRAT menu
+      }
+
+      // 2nd tap na stejný tile → otevřít menu
+      s.lastTappedTile = null;
+    }
+
+    /* =========================
+       🖱️ DESKTOP / 2nd TAP
+       ========================= */
     s.contextMenu.visible = true;
     s.contextMenu.tileX = vxy.vx;
     s.contextMenu.tileY = vxy.vy;
     s.contextMenu.building = b;
     s.contextMenu.mode = b ? "building" : "empty";
-    s.contextMenu.actions = b ? buildBuildingActions(b) : buildEmptyTileActions();
+    s.contextMenu.actions = b
+      ? buildBuildingActions(b)
+      : buildEmptyTileActions();
     s.contextMenu.confirmAction = null;
 
     s.uiMode = "context";
+
   }
 
   // -------------------------
@@ -378,7 +418,7 @@
   IsoCity.uiOverlay = IsoCity.uiOverlay || {};
 
   // keep old calls safe if something expects them
-  IsoCity.uiOverlay.drawInspectPanel = IsoCity.uiOverlay.drawInspectPanel || function () {};
+  IsoCity.uiOverlay.drawInspectPanel = IsoCity.uiOverlay.drawInspectPanel || function () { };
   IsoCity.uiOverlay.drawHUD = IsoCity.uiOverlay.drawHUD || function () {
     const s = IsoCity.state;
     if (!IsoCity.ui || !IsoCity.ui.statusIsFresh()) return;
